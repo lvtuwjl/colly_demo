@@ -10,13 +10,24 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
-const YearLimit = 1000
-const CVEPATH = "/Users/lingjia/Downloads/CVE"
-const MappingFile = "/Users/lingjia/Downloads/mapping.csv" // cveId 年份映射表
+// 并发任务处理
+// var done chan struct{}
+var ch chan string
+var yearCVEMap map[string]int32
+var mu sync.Mutex
+
+const YearLimit = 2000
+const CVEPATH = "CVE"
+const MappingFile = "mapping.csv" // cveId 年份映射表
 
 func main() {
+	//done = make(chan struct{})
+	ch = make(chan string, 100)
+	yearCVEMap = make(map[string]int32)
 	// 1.生成CVE文件夹
 	err := os.Mkdir(CVEPATH, 0750)
 	if err != nil {
@@ -28,24 +39,50 @@ func main() {
 	if err != nil {
 		log.Fatal("create mapping.csv failed:", err)
 	}
-	defer mappingFile.Close()
-	mapWriter := csv.NewWriter(mappingFile)
-	err = mapWriter.Write([]string{"\xEF\xBB\xBF"}) // BOM头文件
+	_, err = mappingFile.Write([]byte{0xef, 0xbb, 0xbf}) // BOM头文件
 	if err != nil {
 		log.Fatal("write BOM failed:", err)
 	}
+	defer mappingFile.Close()
+	mapWriter := csv.NewWriter(mappingFile)
 
-	row := []string{"年份", "CVE", "分数"}
+	row := []string{"CVE编号", "名称", "分数"}
 	err = mapWriter.Write(row)
 	if err != nil {
 		log.Fatalf("can not write title to mapping file, err is %+v", err)
 	}
 	mapWriter.Flush()
 	// 读取csv文件 爬取数据
-	readCSV("/Users/lingjia/Downloads/allitems.csv", mapWriter)
+	go readCSV("items.csv", mapWriter)
+	//go func() {
+	for {
+		select {
+		case cveId, ok := <-ch:
+			time.Sleep(time.Second * 3)
+			if !ok {
+				//done <- struct{}{}
+				time.Sleep(time.Second * 10)
+				fmt.Println("Finish!!!")
+				return
+			}
+			go func() {
+				year := strings.Split(cveId, "-")[1]
+				writeCVE(cveId, mapWriter, year, yearCVEMap)
+			}()
+		}
+	}
+	//cveId := <-ch
+	//year := strings.Split(cveId, "-")[1]
+	//writeCVE(cveId, mapWriter, year, yearCVEMap)
+	//}()
+
+	//<-done
+
+	//time.Sleep(time.Hour * 100)
 }
 
 func readCSV(path string, mappingFile *csv.Writer) {
+	defer close(ch)
 	file, err := os.Open(path)
 	if err != nil {
 		log.Fatal("open file failed, err=", err)
@@ -54,7 +91,7 @@ func readCSV(path string, mappingFile *csv.Writer) {
 	reader := csv.NewReader(file)
 	reader.FieldsPerRecord = -1
 	count := 0
-	yearCVEMap := make(map[string]int32) // 每年对应CVE数量
+	//yearCVEMap := make(map[string]int32) // 每年对应CVE数量
 	for {
 		rec, err := reader.Read()
 		if err == io.EOF {
@@ -83,16 +120,20 @@ func readCSV(path string, mappingFile *csv.Writer) {
 		}
 
 		year := strings.Split(rec[0], "-")[1]
-		if yearCVEMap[year] >= YearLimit {
+		mu.Lock()
+		c := yearCVEMap[year]
+		mu.Unlock()
+		if c >= YearLimit {
 			fmt.Println("year limit:", year)
-			//continue
+			continue
 		}
 		count++
 		//if n > 10 {
 		//	fmt.Println("csv count:", n)
 		//	break
 		//}
-		writeCVE(rec[0], mappingFile, year, yearCVEMap)
+		//writeCVE(rec[0], mappingFile, year, yearCVEMap)
+		ch <- rec[0]
 	}
 	fmt.Println("finish csv count:", count)
 }
@@ -109,6 +150,7 @@ func writeCVE(cveId string, mappingFile *csv.Writer, year string, ym map[string]
 		fmt.Println("score太低，舍弃，score:", score)
 		return
 	}
+
 	cveUrl, err := getUrlBynsfocus(cveId)
 	if err != nil {
 		log.Println("get cve info err:", err)
@@ -118,6 +160,36 @@ func writeCVE(cveId string, mappingFile *csv.Writer, year string, ym map[string]
 	cveText, err := getCVEBynsfocus(cveUrl)
 	if err != nil {
 		log.Println("get cve cveText err:", err)
+		return
+	}
+
+	//score, _ := getCVEScore(cveId)
+	vcss, err := getCVECVSS(cveId)
+	if err != nil {
+		log.Println("get cve vcss err:", err)
+		return
+	}
+
+	// 根据分数来判断
+	if vcss.vector != "Network" {
+		fmt.Println("vector not Network，vector:", vcss.vector)
+		return
+	}
+
+	suggestion, err := getCVESuggestion(cveText)
+	if err != nil {
+		log.Println("get cve suggestion err:", err)
+		return
+	}
+
+	exp, remedia, err := getCVEExp(cveId, suggestion)
+	if err != nil {
+		log.Println("get cve exp and remedia err:", err)
+		return
+	}
+
+	if exp == "" {
+		fmt.Println("empty exp:", exp)
 		return
 	}
 
@@ -166,23 +238,6 @@ func writeCVE(cveId string, mappingFile *csv.Writer, year string, ym map[string]
 	version, err := getCVEAffectedVersion(cveText)
 	if err != nil {
 		log.Println("get cve version err:", err)
-		return
-	}
-	suggestion, err := getCVESuggestion(cveText)
-	if err != nil {
-		log.Println("get cve suggestion err:", err)
-		return
-	}
-
-	//score, _ := getCVEScore(cveId)
-	vcss, err := getCVECVSS(cveId)
-	if err != nil {
-		log.Println("get cve vcss err:", err)
-		return
-	}
-	exp, remedia, err := getCVEExp(cveId, suggestion)
-	if err != nil {
-		log.Println("get cve exp and remedia err:", err)
 		return
 	}
 
@@ -380,16 +435,18 @@ func main() {
 
 	// 7.写入统计记录表 csv 年份 id score
 	{
-		list := strings.Split(cveId, "-")
+		//list := strings.Split(cveId, "-")
 		score := strconv.FormatFloat(score, 'f', -1, 64)
-		row := []string{list[1], cveId, score}
+		row := []string{cveId, name, score}
 		err = mappingFile.Write(row)
 		if err != nil {
 			log.Fatalf("can not write row to mapping file, err is %+v", err)
 		}
 		mappingFile.Flush()
 	}
+	mu.Lock()
 	ym[year]++
+	mu.Unlock()
 }
 
 // 绿盟获取具体CVE的URL
@@ -681,12 +738,15 @@ func getCVEAffectedVersion(text string) (string, error) {
 // 参考建议
 func getCVESuggestion(text string) (string, error) {
 	suggestion := ""
-	list := strings.SplitN(text, "建议：厂商补丁：", 2)
+	list := strings.SplitN(text, "建议：", 2)
 	if len(list) > 1 {
-		list = strings.SplitN(strings.TrimSpace(list[1]), "----", 2)
+		list = strings.SplitN(strings.TrimSpace(list[1]), "厂商补丁：", 2)
 		if len(list) > 1 {
-			list = strings.SplitN(list[1], "浏览次数：", 2)
-			suggestion = strings.TrimSpace(strings.ReplaceAll(list[0], "-", ""))
+			list = strings.SplitN(strings.TrimSpace(list[1]), "----", 2)
+			if len(list) > 1 {
+				list = strings.SplitN(list[1], "浏览次数：", 2)
+				suggestion = strings.TrimSpace(strings.ReplaceAll(list[0], "-", ""))
+			}
 		}
 	}
 	return suggestion, nil
@@ -699,7 +759,7 @@ func getCVEExp(cve, suggestion string) (string, string, error) {
 	}
 	refers := make([]string, 0)
 
-	exp := "Poc"
+	exp := ""
 	remedia := "None"
 
 	c := colly.NewCollector()
@@ -723,7 +783,9 @@ func getCVEExp(cve, suggestion string) (string, string, error) {
 	// return 1 2
 	if len(refers) == 4 {
 		if strings.Contains(strings.ToUpper(refers[1]), "EXP") || strings.Contains(strings.ToUpper(refers[1]), "武器化") {
-			exp = "EXP"
+			exp = "Exp"
+		} else if strings.Contains(strings.ToUpper(refers[1]), "POC") {
+			exp = "Poc"
 		}
 	}
 
@@ -731,7 +793,7 @@ func getCVEExp(cve, suggestion string) (string, string, error) {
 	if strings.Contains(suggestion, "没有提供补丁") {
 		remedia = "None"
 	} else {
-		if strings.Contains(suggestion, "补丁") {
+		if strings.Contains(suggestion, "补丁") || strings.Contains(suggestion, "修复了") {
 			remedia = "OfficialFix"
 			if strings.Contains(suggestion, "临时") {
 				remedia = "TemporaryFix "
