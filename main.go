@@ -77,7 +77,7 @@ func readCSV(path string, mappingFile *csv.Writer) {
 		}
 
 		list := strings.Split(rec[0], "-")
-		if year, err := strconv.Atoi(list[1]); err != nil || year < 2022 {
+		if year, err := strconv.Atoi(list[1]); err != nil || year < 2018 {
 			fmt.Println("年份太低或执行出错", year, err)
 			continue
 		}
@@ -85,20 +85,19 @@ func readCSV(path string, mappingFile *csv.Writer) {
 		year := strings.Split(rec[0], "-")[1]
 		if yearCVEMap[year] >= YearLimit {
 			fmt.Println("year limit:", year)
-			continue
+			//continue
 		}
-		yearCVEMap[year]++
 		count++
 		//if n > 10 {
 		//	fmt.Println("csv count:", n)
 		//	break
 		//}
-		writeCVE(rec[0], mappingFile)
+		writeCVE(rec[0], mappingFile, year, yearCVEMap)
 	}
 	fmt.Println("finish csv count:", count)
 }
 
-func writeCVE(cveId string, mappingFile *csv.Writer) {
+func writeCVE(cveId string, mappingFile *csv.Writer, year string, ym map[string]int32) {
 	//cveId := "CVE-2022-47460"
 	score, err := getCVEScore(cveId)
 	if err != nil {
@@ -192,7 +191,7 @@ func writeCVE(cveId string, mappingFile *csv.Writer) {
 	fmt.Println(desc)
 
 	// 3.创建子CVE文件夹
-	subCVEName := strings.ReplaceAll(cveId, "-", "_")
+	subCVEName := strings.ToLower(strings.ReplaceAll(cveId, "-", "_"))
 	subCVEDir := CVEPATH + "/" + subCVEName
 	err = os.Mkdir(subCVEDir, 0750)
 	if err != nil {
@@ -390,6 +389,7 @@ func main() {
 		}
 		mappingFile.Flush()
 	}
+	ym[year]++
 }
 
 // 绿盟获取具体CVE的URL
@@ -683,10 +683,10 @@ func getCVESuggestion(text string) (string, error) {
 	suggestion := ""
 	list := strings.SplitN(text, "建议：厂商补丁：", 2)
 	if len(list) > 1 {
-		list = strings.SplitN(strings.TrimSpace(list[1]), "------", 2)
+		list = strings.SplitN(strings.TrimSpace(list[1]), "----", 2)
 		if len(list) > 1 {
 			list = strings.SplitN(list[1], "浏览次数：", 2)
-			suggestion = strings.TrimSpace(list[0])
+			suggestion = strings.TrimSpace(strings.ReplaceAll(list[0], "-", ""))
 		}
 	}
 	return suggestion, nil
@@ -728,12 +728,17 @@ func getCVEExp(cve, suggestion string) (string, string, error) {
 	}
 
 	//
-	if strings.Contains(suggestion, "补丁") {
-		remedia = "OfficialFix"
-		if strings.Contains(suggestion, "临时") {
-			remedia = "TemporaryFix "
+	if strings.Contains(suggestion, "没有提供补丁") {
+		remedia = "None"
+	} else {
+		if strings.Contains(suggestion, "补丁") {
+			remedia = "OfficialFix"
+			if strings.Contains(suggestion, "临时") {
+				remedia = "TemporaryFix "
+			}
 		}
 	}
+
 	return exp, remedia, nil
 }
 
