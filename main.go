@@ -53,22 +53,22 @@ func main() {
 	}
 	mapWriter.Flush()
 	// 读取csv文件 爬取数据
-	go readCSV("items.csv", mapWriter)
+	go readCSV("mapping_all.csv", mapWriter)
 	//go func() {
 	for {
 		select {
 		case cveId, ok := <-ch:
-			time.Sleep(time.Second * 3)
+			//time.Sleep(time.Second * 3)
 			if !ok {
 				//done <- struct{}{}
 				time.Sleep(time.Second * 10)
 				fmt.Println("Finish!!!")
 				return
 			}
-			go func() {
-				year := strings.Split(cveId, "-")[1]
-				writeCVE(cveId, mapWriter, year, yearCVEMap)
-			}()
+			//go func() {
+			year := strings.Split(cveId, "-")[1]
+			writeCVE(cveId, mapWriter, year, yearCVEMap)
+			//}()
 		}
 	}
 	//cveId := <-ch
@@ -133,7 +133,7 @@ func readCSV(path string, mappingFile *csv.Writer) {
 		//	break
 		//}
 		//writeCVE(rec[0], mappingFile, year, yearCVEMap)
-		ch <- rec[0]
+		ch <- strings.TrimSpace(rec[0])
 	}
 	fmt.Println("finish csv count:", count)
 }
@@ -171,7 +171,7 @@ func writeCVE(cveId string, mappingFile *csv.Writer, year string, ym map[string]
 	}
 
 	// 根据分数来判断
-	if vcss.vector != "Network" {
+	if vcss.vector != "Network" && vcss.vector != "Adjacent Network" {
 		fmt.Println("vector not Network，vector:", vcss.vector)
 		return
 	}
@@ -188,10 +188,10 @@ func writeCVE(cveId string, mappingFile *csv.Writer, year string, ym map[string]
 		return
 	}
 
-	if exp == "" {
-		fmt.Println("empty exp:", exp)
-		return
-	}
+	//if exp == "" {
+	//	fmt.Println("empty exp:", exp)
+	//	return
+	//}
 
 	name, err := getCVEName(cveText)
 	if err != nil {
